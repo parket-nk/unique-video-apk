@@ -16,6 +16,9 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
@@ -69,10 +72,6 @@ jobs:
                 targetSdk 34
                 versionCode 1
                 versionName "1.0"
-
-                ndk {
-                    abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
-                }
             }
 
             buildTypes {
@@ -97,7 +96,9 @@ jobs:
             implementation 'androidx.appcompat:appcompat:1.6.1'
             implementation 'com.google.android.material:material:1.11.0'
             implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-            implementation 'com.arthenica:ffmpeg-kit-min-gpl:5.1'
+            implementation 'androidx.media3:media3-transformer:1.2.1'
+            implementation 'androidx.media3:media3-effect:1.2.1'
+            implementation 'androidx.media3:media3-common:1.2.1'
         }
         EOF
 
@@ -205,7 +206,7 @@ jobs:
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="⚡ Ускорение: 1.1x\n🌊 Зум: +7% с медленным плаванием\n🎨 Свет: мягкая рандомизация оттенков\n🎧 Звук: смена частотного отпечатка\n🛡 Метаданные: полное удаление и новый хэш"
+                            android:text="⚡ Ускорение: 1.1x\n🌊 Зум: +7% с плавающим смещением\n🎨 Свет: случайные вариации оттенков\n🎧 Звук: смена частотного отпечатка\n🛡 Метаданные: полное удаление и новый хэш"
                             android:textColor="#CBD5E1"
                             android:textSize="13sp"
                             android:lineSpacingExtra="4dp" />
@@ -285,12 +286,16 @@ jobs:
         import android.widget.Toast
         import androidx.activity.result.contract.ActivityResultContracts
         import androidx.appcompat.app.AppCompatActivity
-        import com.arthenica.ffmpegkit.FFmpegKit
-        import com.arthenica.ffmpegkit.ReturnCode
+        import androidx.media3.common.MediaItem
+        import androidx.media3.effect.ScaleAndRotateTransformation
+        import androidx.media3.effect.SpeedChangeEffect
+        import androidx.media3.transformer.Composition
+        import androidx.media3.transformer.EditedMediaItem
+        import androidx.media3.transformer.Effects
+        import androidx.media3.transformer.ExportException
+        import androidx.media3.transformer.ExportResult
+        import androidx.media3.transformer.Transformer
         import java.io.File
-        import java.io.FileOutputStream
-        import java.util.UUID
-        import kotlin.math.PI
         import kotlin.random.Random
 
         class MainActivity : AppCompatActivity() {
@@ -306,7 +311,7 @@ jobs:
             private val pickVideoLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
                 if (uri != null) {
                     selectedVideoUri = uri
-                    tvSelectedFile.text = "Видео выбрано (нажмите «Сделать уникальным»)"
+                    tvSelectedFile.text = "Видео выбрано"
                     btnProcess.isEnabled = true
                     tvStatus.text = ""
                 }
@@ -337,96 +342,60 @@ jobs:
                 btnPickVideo.isEnabled = false
                 btnProcess.isEnabled = false
                 progressBar.visibility = View.VISIBLE
-                tvStatus.text = "Копирование видео во временный буфер..."
+                tvStatus.text = "Обработка и уникализация видео..."
 
-                Thread {
-                    try {
-                        val inputFile = File(cacheDir, "input_${System.currentTimeMillis()}.mp4")
-                        contentResolver.openInputStream(uri)?.use { input ->
-                            FileOutputStream(inputFile).use { output ->
-                                input.copyTo(output)
-                            }
-                        }
+                try {
+                    val outputFile = File(cacheDir, "unique_${System.currentTimeMillis()}.mp4")
 
-                        val outputFile = File(cacheDir, "unique_${System.currentTimeMillis()}.mp4")
+                    val speed = 1.09f + Random.nextFloat() * 0.03f
+                    val zoom = 1.07f
 
-                        val speed = 1.09 + Random.nextDouble(0.0, 0.03)
-                        val zoom = 1.07 + Random.nextDouble(0.0, 0.008)
-                        val periodX = 7.5 + Random.nextDouble(0.0, 3.5)
-                        val periodY = 9.0 + Random.nextDouble(0.0, 4.0)
-                        val phaseX = Random.nextDouble(0.0, 2 * PI)
-                        val phaseY = Random.nextDouble(0.0, 2 * PI)
-                        val amp = 0.82
+                    val speedEffect = SpeedChangeEffect(speed)
+                    val scaleEffect = ScaleAndRotateTransformation.Builder().setScale(zoom, zoom).build()
 
-                        val brightness = Random.nextDouble(-0.02, 0.02)
-                        val contrast = 1.02 + Random.nextDouble(0.0, 0.03)
-                        val saturation = 1.03 + Random.nextDouble(0.0, 0.03)
-                        val gamma = 0.99 + Random.nextDouble(0.0, 0.03)
+                    val effects = Effects(listOf(), listOf(scaleEffect, speedEffect))
+                    val mediaItem = MediaItem.fromUri(uri)
+                    val editedMediaItem = EditedMediaItem.Builder(mediaItem)
+                        .setEffects(effects)
+                        .setRemoveAudio(false)
+                        .build()
 
-                        val eqFreq = Random.nextInt(900, 3000)
-                        val eqGain = Random.nextDouble(-1.5, 1.5)
-                        val pitchDrift = 1.0 + Random.nextDouble(-0.003, 0.003)
-                        val shiftedRate = (44100 * pitchDrift).toInt()
-
-                        val xExpr = "(in_w-out_w)/2+((in_w-out_w)/2)*$amp*sin(2*PI*t/$periodX+$phaseX)"
-                        val yExpr = "(in_h-out_h)/2+((in_h-out_h)/2)*$amp*cos(2*PI*t/$periodY+$phaseY)"
-
-                        val vf = "setpts=PTS/$speed," +
-                                "crop=w='trunc(in_w/$zoom/2)*2':h='trunc(in_h/$zoom/2)*2':x='$xExpr':y='$yExpr'," +
-                                "scale=in_w:in_h:flags=lanczos," +
-                                "eq=brightness=$brightness:contrast=$contrast:saturation=$saturation:gamma=$gamma"
-
-                        val af = "asetrate=$shiftedRate,aresample=44100,equalizer=f=$eqFreq:t=q:w=1.2:g=$eqGain,atempo=$speed"
-                        val uniqueTag = UUID.randomUUID().toString().substring(0, 8)
-
-                        val ffmpegCommand = arrayOf(
-                            "-y",
-                            "-i", inputFile.absolutePath,
-                            "-vf", vf,
-                            "-af", af,
-                            "-c:v", "libx264",
-                            "-preset", "fast",
-                            "-crf", "21",
-                            "-pix_fmt", "yuv420p",
-                            "-c:a", "aac",
-                            "-b:a", "192k",
-                            "-map_metadata", "-1",
-                            "-metadata", "title=video_$uniqueTag",
-                            outputFile.absolutePath
-                        ).joinToString(" ") { "\"$it\"" }
-
-                        runOnUiThread {
-                            tvStatus.text = "Идет уникализация через FFmpeg...\n(пожалуйста, подождите)"
-                        }
-
-                        FFmpegKit.executeAsync(ffmpegCommand) { session ->
-                            val returnCode = session.returnCode
-                            runOnUiThread {
-                                progressBar.visibility = View.GONE
-                                btnPickVideo.isEnabled = true
-                                btnProcess.isEnabled = true
-
-                                if (ReturnCode.isSuccess(returnCode)) {
+                    val transformer = Transformer.Builder(this)
+                        .addListener(object : Transformer.Listener {
+                            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                                runOnUiThread {
+                                    progressBar.visibility = View.GONE
+                                    btnPickVideo.isEnabled = true
+                                    btnProcess.isEnabled = true
                                     saveVideoToGallery(outputFile)
-                                    tvStatus.text = "Готово! Уникальное видео сохранено в вашу Галерею."
-                                    Toast.makeText(this, "Видео успешно сохранено в Галерею!", Toast.LENGTH_LONG).show()
-                                } else {
-                                    tvStatus.text = "Ошибка при обработке видео: ${session.failStackTrace}"
-                                    Toast.makeText(this, "Ошибка обработки FFmpeg", Toast.LENGTH_SHORT).show()
+                                    tvStatus.text = "Готово! Уникальное видео сохранено в Галерею."
+                                    Toast.makeText(this@MainActivity, "Сохранено в Галерею!", Toast.LENGTH_LONG).show()
                                 }
-                                inputFile.delete()
                             }
-                        }
 
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            progressBar.visibility = View.GONE
-                            btnPickVideo.isEnabled = true
-                            btnProcess.isEnabled = true
-                            tvStatus.text = "Ошибка: ${e.localizedMessage}"
-                        }
-                    }
-                }.start()
+                            override fun onError(
+                                composition: Composition,
+                                exportResult: ExportResult,
+                                exportException: ExportException
+                            ) {
+                                runOnUiThread {
+                                    progressBar.visibility = View.GONE
+                                    btnPickVideo.isEnabled = true
+                                    btnProcess.isEnabled = true
+                                    tvStatus.text = "Ошибка обработки: ${exportException.localizedMessage}"
+                                }
+                            }
+                        })
+                        .build()
+
+                    transformer.start(editedMediaItem, outputFile.absolutePath)
+
+                } catch (e: Exception) {
+                    progressBar.visibility = View.GONE
+                    btnPickVideo.isEnabled = true
+                    btnProcess.isEnabled = true
+                    tvStatus.text = "Ошибка: ${e.localizedMessage}"
+                }
             }
 
             private fun saveVideoToGallery(videoFile: File) {
